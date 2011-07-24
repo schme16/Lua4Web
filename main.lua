@@ -1,22 +1,15 @@
-require 'WebServer.lua'
+webLib = loadfile("WebServer.lua")
 
-function love.load()
+if (webLib) then
+	webLib()
 	WebServer:run()
+
+	while true do
+		WebServer:mainLoop()
+	end
+else
+	print('Failed to load WebServer Library')
 end
-
-
-function love.update(dt)
-	WebServer:mainLoop()
-
-end
-
-
-function love.draw(dt)
-	love.graphics.print("Web Server started on port: "..WebServer._port,135,150)
-end
-
-
-
 
 
 

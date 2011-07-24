@@ -1,25 +1,28 @@
-	master = require("socket")
-	bind = master.bind
-	select = master.select
-	
-	WebServer = {
-		_port = 8080,
-		_header = 
-			[[HTTP/1.1 200 OK
-			Date: Fri, 19 Apr 2002 20:37:57 GMT
-			Server: Apache/1.3.23 (Darwin) mod_ssl/2.8.7 OpenSSL/0.9.6b
-			Cache-Control: max-age=60
-			Expires: Fri, 19 Apr 2002 20:38:57 GMT
-			Last-Modified: Tue, 16 Apr 2002 02:00:34 GMT
-			ETag: "3c57e-1e47-3cbb85c2"
-			Accept-Ranges: bytes
-		Content-Length: ]].. string.len('1') ..[[
-		Connection: close
-			]],
-	}
+
+master = require("socket")
+bind = master.bind
+select = master.select
+errorMsg = {}
+	errorMsg[404] = 'No File Found..... sorry?'
+
+WebServer = {
+	_port = 80,
+	_header = 
+		[[HTTP/1.1 200 OK
+		Date: Fri, 19 Apr 2002 20:37:57 GMT
+		Server: Apache/1.3.23 (Darwin) mod_ssl/2.8.7 OpenSSL/0.9.6b
+		Cache-Control: max-age=60
+		Expires: Fri, 19 Apr 2002 20:38:57 GMT
+		Last-Modified: Tue, 16 Apr 2002 02:00:34 GMT
+		ETag: "3c57e-1e47-3cbb85c2"
+		Accept-Ranges: bytes
+	Content-Length: ]].. string.len('1') ..[[
+	Connection: close
+		]],
+}
 	
 function WebServer:run()
-  self._server = bind("localhost", self._port)
+  self._server = bind("192.168.1.3", self._port)
   self._server:settimeout(.01)
   self._clients = {}
   self._sendClients = {}
@@ -38,27 +41,25 @@ function WebServer:mainLoop()
 local clients = WebServer._clients
     WebServer:lookForNewClients()
 
-    local receivingClients, _, error = select(clients, nil, .01)
+    local receivingClients, _, error = select(clients, nil, .001)
     if error and error ~= "timeout" then
       print("error = "..tostring(error))
     end
 
-    for i, c in ipairs( receivingClients) do
+    for i, c in ipairs( receivingClients ) do
 
       local get, error = c:receive()
 
       if error then
 
 print("error: "..tostring(error).." on c "..tostring(c))
-
         table.remove(clients, i)
       else
+		
+		print(c:getsockname())
+	  
 		local data = WebServer:serveFiles(string.sub(get,5,string.len(get)-9))
-        local response = WebServer._header.. [[
-		Content-Length: ]].. string.len(data) ..[[
-		Connection: close
-		]] .. "Content-Type: text/html\n\n" .. data
-        error, bytesSent = c:send(response)
+        error, bytesSent = c:send(tostring(data))
         c:close()
         table.remove(clients, i)
       end
@@ -66,72 +67,86 @@ print("error: "..tostring(error).." on c "..tostring(c))
     end
 end
 
+function WebServer:parseURIVars(get)
+	local temp = explode('?', get)
+	local vars = {}
+	varsTemp = explode('&', tostring(temp[2]))
+	for i,v in ipairs(varsTemp) do
+		local temp = explode('=', v)
+		vars[temp[1]] = temp[2]
+	end
+
+	return temp[1], vars
+end
+
 function WebServer:serveFiles(rawGet)
 	local filePath = ''
-	local noFile = false
-	local data = ''
+	local data
 	local docroot = 'www'
 	local errorMsg = {}
-	errorMsg[404] = 'No File Found..... sorry?'
 	local get, vars = WebServer:parseURIVars(rawGet)
+
 	if get == '/' then
-		if love.filesystem.exists(docroot..'/index.lp') then filePath = '/index.lp'
-		else
-			if love.filesystem.exists(docroot..'/index.html') then filePath = '/index.html'
-			else
-				if love.filesystem.exists(docroot..'/index.htm') then filePath = '/index.htm'
-				else
-					noFile = true	
-				end
+		fileHandle = io.open ( docroot..'/index.lp')
+		if not(fileHandle) then 
+			fileHandle = io.open ( docroot..'/index.html')
+			if not(fileHandle) then 
+				fileHandle = io.open ( docroot..'/index.htm')
+				if not(fileHandle) then data = errorMsg[404]	end
 			end
 		end
 	else
-		--print(docroot..get)
-		if love.filesystem.exists(docroot..get) then
-			filePath = get
-		else
-			noFile = true	
-		end
-	end
-	
-	if not(noFile) then
-		if love.filesystem.exists(docroot..filePath) then
-			data = love.filesystem.read(docroot..filePath)
-		else
-			data = errorMsg[404]
-		
-		end
-	else
-		data = errorMsg[404]
+		fileHandle = io.open ( docroot..get,'rb')		
+		if not(fileHandle) then data = errorMsg[404]	end
 	end
 
-	if noFile or  string.sub(get, string.len(get)-2) == '.lp' or string.sub(get, string.len(get)-3) == '.htm' or string.sub(get, string.len(get)-4) == '.html' then
-		data = WebServer:postProccess(data)
+	if fileHandle then data = fileHandle:read("*a") end
+	if (fileHandle and get=='/') or  string.sub(get, string.len(get)-4) == '.lp' or string.sub(get, string.len(get)-5) == '.htm' or string.sub(get, string.len(get)-6) == '.html' then
+		data = WebServer:postProccess(data,vars)
 	end
   return data
 
 end
 
-function WebServer:parseURIVars(get)
-	local temp = explode('?', get)
-	vars = explode('&', tostring(temp[2]))
-	print(vars[1])
-	return temp[1], temp[2]
-end
-
-
-function WebServer:postProccess(data)
-	local tempData = explode('<?lua>',data)
+function WebServer:postProccess(rawData,vars)
 	local pageViewable = ''
-	for i,v in pairs(tempData) do
-		local f = loadstring(string.sub(v, 6))
-		if type(f)=='function' then
-			f()
+	local data = ''
+	local tempData = explode("[lua]",rawData)
+	local codeBlocks = {} 
+
+
+
+	-- make environment
+	asdasd='poooooo'
+	local env = {
+		print=function(x) if x==nil then x ='' end pageViewable = pageViewable..tostring(x)  end,
+		ipairs=ipairs,
+		tostring = tostring,
+		error = function() print('there was an errror!') end,
+		GET = vars
+	}
+	local function run(untrusted_code)
+		local untrusted_function, message = loadstring(untrusted_code)
+		if not untrusted_function then return nil, message end
+		setfenv(untrusted_function, env)
+		return pcall(untrusted_function)
+	end	
+	
+		
+	for i,v in ipairs(tempData) do
+		if i ~= 1 then
+			local temp = explode('[/lua]', string.sub(v, 5) )
+			local runCode,msg = run(temp[1])
+			if (runCode) and temp[2] then 
+				pageViewable = pageViewable..string.sub(temp[2],6)
+			end
+			
 		else
 			pageViewable = pageViewable..v
 		end
 	end
-	return data
+	
+	return tostring(pageViewable..'\n')
 end
 
 
