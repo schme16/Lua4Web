@@ -7,22 +7,11 @@ errorMsg = {}
 
 WebServer = {
 	_port = 80,
-	_header = 
-		[[HTTP/1.1 200 OK
-		Date: Fri, 19 Apr 2002 20:37:57 GMT
-		Server: Apache/1.3.23 (Darwin) mod_ssl/2.8.7 OpenSSL/0.9.6b
-		Cache-Control: max-age=60
-		Expires: Fri, 19 Apr 2002 20:38:57 GMT
-		Last-Modified: Tue, 16 Apr 2002 02:00:34 GMT
-		ETag: "3c57e-1e47-3cbb85c2"
-		Accept-Ranges: bytes
-	Content-Length: ]].. string.len('1') ..[[
-	Connection: close
-		]],
+	_header = '',
 }
 	
 function WebServer:run()
-  self._server = bind("192.168.1.3", self._port)
+  self._server = bind("*", self._port)
   self._server:settimeout(.01)
   self._clients = {}
   self._sendClients = {}
@@ -41,42 +30,70 @@ function WebServer:mainLoop()
 local clients = WebServer._clients
     WebServer:lookForNewClients()
 
-    local receivingClients, _, error = select(clients, nil, .001)
-    if error and error ~= "timeout" then
-      print("error = "..tostring(error))
+    local receivingClients, _, err = select(clients, nil, 0.01)
+    if err and err ~= "timeout" then
+      print("error = "..tostring(err))
     end
 
     for i, c in ipairs( receivingClients ) do
 
-      local get, error = c:receive()
+    local get, err = clientRead(c, '*a')
 
-      if error then
+	if err then
+		table.remove(clients, i)
+	else
 
-print("error: "..tostring(error).." on c "..tostring(c))
-        table.remove(clients, i)
-      else
-		
-		print(c:getsockname())
-	  
+		--print(c:getpeername())
+
 		local data = WebServer:serveFiles(string.sub(get,5,string.len(get)-9))
-        error, bytesSent = c:send(tostring(data))
-        c:close()
-        table.remove(clients, i)
-      end
+		if not(data) then data = ' Oops, there was an error!' end
+			err, bytesSent = c:send(data)
+			c:close()
+			table.remove(clients, i)
+		end
 
     end
 end
 
-function WebServer:parseURIVars(get)
-	local temp = explode('?', get)
-	local vars = {}
-	varsTemp = explode('&', tostring(temp[2]))
+function WebServer:parseURIVars(headers)
+	local headerList = {}
+	local test = 1
+	local index = 1
+	
+	--this finds post data
+	for i = 0, string.len(headers) do
+		local test = (string.find(headers, '\n\r'))
+		if not (test) then break end
+		index = test
+	end
+	
+
+
+	--Coalate POST
+	post = {}
+		
+	local tempPost = tostring(string.gsub(string.sub(tostring(headers),index+3),'+', ' '))
+
+	varsTemp = explode('&', tempPost)
 	for i,v in ipairs(varsTemp) do
 		local temp = explode('=', v)
-		vars[temp[1]] = temp[2]
+		post[temp[1]] =  url_decode(tostring(temp[2]))
 	end
 
-	return temp[1], vars
+	
+	--Coalate GET
+	local get = {}
+	local tempGet = explode('?', string.sub(headers,2, string.find(headers, '\n')-11))
+	varsTemp = explode('&', tostring(tempGet[2]))
+	for i,v in ipairs(varsTemp) do
+		local temp = explode('=', v)
+		get[temp[1]] = url_decode(tostring(temp[2]))
+	end
+	
+	
+	
+	return tempGet[1], {get = get, post = post}
+	
 end
 
 function WebServer:serveFiles(rawGet)
@@ -84,24 +101,31 @@ function WebServer:serveFiles(rawGet)
 	local data
 	local docroot = 'www'
 	local errorMsg = {}
+	--print(rawGet)
 	local get, vars = WebServer:parseURIVars(rawGet)
-
-	if get == '/' then
+	if get == '/'  or get == '' then
 		fileHandle = io.open ( docroot..'/index.lp')
+		get = docroot..'/index.lp'
 		if not(fileHandle) then 
 			fileHandle = io.open ( docroot..'/index.html')
+			get = docroot..'/index.html'
 			if not(fileHandle) then 
 				fileHandle = io.open ( docroot..'/index.htm')
+				get = docroot..'/index.htm'
 				if not(fileHandle) then data = errorMsg[404]	end
 			end
 		end
 	else
+	docroot = docroot..'/'
 		fileHandle = io.open ( docroot..get,'rb')		
 		if not(fileHandle) then data = errorMsg[404]	end
 	end
 
 	if fileHandle then data = fileHandle:read("*a") end
-	if (fileHandle and get=='/') or  string.sub(get, string.len(get)-4) == '.lp' or string.sub(get, string.len(get)-5) == '.htm' or string.sub(get, string.len(get)-6) == '.html' then
+	if (fileHandle and get=='/') or
+		string.sub(get, string.len(get)-2) == '.lp' or
+		string.sub(get, string.len(get)-3) == '.htm' or
+		string.sub(get, string.len(get)-4) == '.html' then
 		data = WebServer:postProccess(data,vars)
 	end
   return data
@@ -116,14 +140,14 @@ function WebServer:postProccess(rawData,vars)
 
 
 
-	-- make environment
-	asdasd='poooooo'
+	-- make environment, including only that which is either necessary or safe
 	local env = {
 		print=function(x) if x==nil then x ='' end pageViewable = pageViewable..tostring(x)  end,
+		error = function() print('there was an errror!') end,
 		ipairs=ipairs,
 		tostring = tostring,
-		error = function() print('there was an errror!') end,
-		GET = vars
+		GET = vars.get,
+		POST = vars.post,
 	}
 	local function run(untrusted_code)
 		local untrusted_function, message = loadstring(untrusted_code)
@@ -150,11 +174,30 @@ function WebServer:postProccess(rawData,vars)
 end
 
 
+function url_decode(str)
+  str = string.gsub (str, "+", " ")
+  str = string.gsub (str, "%%(%x%x)",
+      function(h) return string.char(tonumber(h,16)) end)
+  str = string.gsub (str, "\r\n", "\n")
+  return str
+end
 
 
 
+function clientRead(client, pattern, prefix)
 
+	local data, emsg, partial = client:receive(pattern, prefix)
 
+	if data then
+		return data
+	end
+	if partial and #partial > 0 then
+		return partial
+	end
+	
+	return false, emsg
+
+end
 
 
 function explode(d,p)

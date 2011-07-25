@@ -9,6 +9,8 @@ if (webLib) then
 	end
 else
 	print('Failed to load WebServer Library')
+	while true do
+	end
 end
 
 
