@@ -1,4 +1,3 @@
-
 master = require("socket")
 bind = master.bind
 select = master.select
@@ -7,12 +6,26 @@ errorMsg = {}
 
 WebServer = {
 	_port = 80,
-	_header = '',
-}
+	_header = [[
 	
+HTTP/1.1 200 OK
+Date: Mon, 23 May 2005 22:38:34 GMT
+Server: Apache/1.3.3.7 (Unix)  (Red-Hat/Linux)
+Last-Modified: ]]..os.date('%a, %d %b %Y %H:%M:%S')..[[ GMT +10
+Accept-Ranges: bytes
+Content-Length: 438
+Connection: close
+Content-Type: text/html; charset=UTF-8
+
+
+]],
+	_timeout =  0.00000001,
+}
+
 function WebServer:run()
   self._server = bind("*", self._port)
-  self._server:settimeout(.01)
+  if not(self._server) then print('Port: '..self._port..' Unavailable') return end
+  self._server:settimeout(WebServer._timeout)
   self._clients = {}
   self._sendClients = {}
   print("WebServer running on port "..self._port)
@@ -21,38 +34,34 @@ end
 function WebServer:lookForNewClients()
   local client = self._server:accept()
   if client then
-    client:settimeout(1)
+    client:settimeout(0)
     table.insert(self._clients, client)
   end
 end
 
 function WebServer:mainLoop()
-local clients = WebServer._clients
-    WebServer:lookForNewClients()
+	local clients = WebServer._clients
+	WebServer:lookForNewClients()
 
-    local receivingClients, _, err = select(clients, nil, 0.01)
-    if err and err ~= "timeout" then
-      print("error = "..tostring(err))
-    end
+	local receivingClients, _, err = select(clients, nil,WebServer._timeout)
+	if err and err ~= "timeout" then
+	  print("error = "..tostring(err))
+	end
 
-    for i, c in ipairs( receivingClients ) do
+	for i, c in ipairs( receivingClients ) do
+		c:settimeout(WebServer._timeout)
+		local get, err = clientRead(c, '*a')
 
-    local get, err = clientRead(c, '*a')
-
-	if err then
-		table.remove(clients, i)
-	else
-
-		--print(c:getpeername())
-
+		if err then
+			table.remove(clients, i)
+		else
 		local data = WebServer:serveFiles(string.sub(get,5,string.len(get)-9))
 		if not(data) then data = ' Oops, there was an error!' end
 			err, bytesSent = c:send(data)
 			c:close()
 			table.remove(clients, i)
 		end
-
-    end
+	end
 end
 
 function WebServer:parseURIVars(headers)
@@ -67,7 +76,7 @@ function WebServer:parseURIVars(headers)
 		index = test
 	end
 	
-
+	
 
 	--Coalate POST
 	post = {}
@@ -83,7 +92,10 @@ function WebServer:parseURIVars(headers)
 	
 	--Coalate GET
 	local get = {}
-	local tempGet = explode('?', string.sub(headers,2, string.find(headers, '\n')-11))
+	local tempString = string.sub(headers,2, string.find(headers, '\n')-11)
+	if tempString == '?' then tempString = '' end
+	local tempGet = explode('?', tempString)
+	
 	varsTemp = explode('&', tostring(tempGet[2]))
 	for i,v in ipairs(varsTemp) do
 		local temp = explode('=', v)
@@ -91,7 +103,7 @@ function WebServer:parseURIVars(headers)
 	end
 	
 	
-	
+	print(get)
 	return tempGet[1], {get = get, post = post}
 	
 end
@@ -126,7 +138,12 @@ function WebServer:serveFiles(rawGet)
 		string.sub(get, string.len(get)-2) == '.lp' or
 		string.sub(get, string.len(get)-3) == '.htm' or
 		string.sub(get, string.len(get)-4) == '.html' then
-		data = WebServer:postProccess(data,vars)
+			data = self._header..tostring(WebServer:postProccess(data,vars))
+			
+	elseif get=='/' and not(fileHandle) then
+		data = self._header..'No Index file found, but one was requested.'
+	elseif not(get=='/') and not(fileHandle) then
+		data = 'Data could not be read from file; Please check that file is not locked or encrypted!'
 	end
   return data
 
@@ -135,7 +152,7 @@ end
 function WebServer:postProccess(rawData,vars)
 	local pageViewable = ''
 	local data = ''
-	local tempData = explode("[lua]",rawData)
+	local tempData = explode("[lua]",tostring(rawData))
 	local codeBlocks = {} 
 
 
@@ -174,6 +191,9 @@ function WebServer:postProccess(rawData,vars)
 end
 
 
+
+
+
 function url_decode(str)
   str = string.gsub (str, "+", " ")
   str = string.gsub (str, "%%(%x%x)",
@@ -181,8 +201,6 @@ function url_decode(str)
   str = string.gsub (str, "\r\n", "\n")
   return str
 end
-
-
 
 function clientRead(client, pattern, prefix)
 
