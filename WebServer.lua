@@ -3,43 +3,37 @@ bind = master.bind
 select = master.select
 errorMsg = {}
 	errorMsg[404] = 'No File Found..... sorry?'
+	errorMsg[200] = ''
 
 WebServer = {
+	largeFileList = {},
 	_port = 80,
 	_header = [[
-	
-HTTP/1.1 200 OK
-Date: Mon, 23 May 2005 22:38:34 GMT
-Server: Apache/1.3.3.7 (Unix)  (Red-Hat/Linux)
-Last-Modified: ]]..os.date('%a, %d %b %Y %H:%M:%S')..[[ GMT +10
-Accept-Ranges: bytes
-Content-Length: 438
-Connection: close
-Content-Type: text/html; charset=UTF-8
-
 
 ]],
-	_timeout =  0.00000001,
+	_timeout =  0.0001,
 }
 
-function WebServer:run()
-  self._server = bind("*", self._port)
-  if not(self._server) then print('Port: '..self._port..' Unavailable') return end
-  self._server:settimeout(WebServer._timeout)
-  self._clients = {}
-  self._sendClients = {}
-  print("WebServer running on port "..self._port)
+modules = {}
+
+function WebServer:init()
+  WebServer._server = bind("*", WebServer._port)
+  if not(WebServer._server) then print('Port: '..WebServer._port..' Unavailable') return end
+  WebServer._server:settimeout(WebServer._timeout)
+  WebServer._clients = {}
+  WebServer._sendClients = {}
+  print("WebServer running on port "..WebServer._port)
 end
 
 function WebServer:lookForNewClients()
   local client = self._server:accept()
   if client then
-    client:settimeout(0)
+    client:settimeout(self._timeout)
     table.insert(self._clients, client)
   end
 end
 
-function WebServer:mainLoop()
+function WebServer:run()
 	local clients = WebServer._clients
 	WebServer:lookForNewClients()
 
@@ -49,18 +43,60 @@ function WebServer:mainLoop()
 	end
 
 	for i, c in ipairs( receivingClients ) do
-		c:settimeout(WebServer._timeout)
 		local get, err = clientRead(c, '*a')
 
 		if err then
 			table.remove(clients, i)
 		else
-		local data = WebServer:serveFiles(string.sub(get,5,string.len(get)-9))
-		if not(data) then data = ' Oops, there was an error!' end
-			err, bytesSent = c:send(data)
-			c:close()
+			local data = WebServer:serveFiles(string.sub(get,5,string.len(get)-9))
+			if not(data) then data = ' Oops, there was an error!' end
+			data = WebServer:_header(data, '')..data
+			bytesSent, err,index = c:send(data,1)
+			table.insert( WebServer.largeFileList ,{b = bytesSent, e = err, i = index, c = c, d = data})
 			table.remove(clients, i)
+
+			
+			
 		end
+	end
+	WebServer:largeFileDispatch()
+end
+
+function WebServer:_header(data, get)
+	local status = 200
+	local header = 
+[[
+	
+]]
+
+for i,v in ipairs(errorMsg) do
+	if data == v then
+		status = i
+	end
+end
+
+	header = header..
+[[	HTTP/1.1 ]]..status..[[ OK
+	Date: ]]..os.date('%a, %d %b %Y %H:%M:%S')..[[ GMT +10
+	Server: Lua4Web Rev3 (Cross-Platform)  (x86 Arch)
+	Last-Modified: ]]..os.date('%a, %d %b %Y %H:%M:%S')..[[ GMT +10
+	Accept-Ranges: bytes
+	Content-Length: ]]..(string.len(data)/8)..[[
+	
+	Connection: keep-alive
+
+]] return header
+--Content-Type: text/html; charset=UTF-8
+end
+
+function WebServer:largeFileDispatch()
+	for i,v in ipairs(WebServer.largeFileList) do
+		if v.e ~= 'timeout' or not(v.i) then 
+			v.c:close() table.remove(WebServer.largeFileList,i)
+		else
+			v.b, v.e,v.i = v.c:send(v.d,v.i+1)
+		end
+
 	end
 end
 
@@ -103,7 +139,7 @@ function WebServer:parseURIVars(headers)
 	end
 	
 	
-	print(get)
+	--print(get)
 	return tempGet[1], {get = get, post = post}
 	
 end
@@ -138,10 +174,10 @@ function WebServer:serveFiles(rawGet)
 		string.sub(get, string.len(get)-2) == '.lp' or
 		string.sub(get, string.len(get)-3) == '.htm' or
 		string.sub(get, string.len(get)-4) == '.html' then
-			data = self._header..tostring(WebServer:postProccess(data,vars))
+			data = tostring(WebServer:postProccess(data,vars))
 			
 	elseif get=='/' and not(fileHandle) then
-		data = self._header..'No Index file found, but one was requested.'
+		data = 'No Index file found, but one was requested.'
 	elseif not(get=='/') and not(fileHandle) then
 		data = 'Data could not be read from file; Please check that file is not locked or encrypted!'
 	end
@@ -160,17 +196,26 @@ function WebServer:postProccess(rawData,vars)
 	-- make environment, including only that which is either necessary or safe
 	local env = {
 		print=function(x) if x==nil then x ='' end pageViewable = pageViewable..tostring(x)  end,
-		error = function() print('there was an errror!') end,
+		error = function(...) print(...) end,
+		errorTable = function(tableVar) print(json.encode(tableVar)) end,
 		ipairs=ipairs,
 		tostring = tostring,
 		GET = vars.get,
 		POST = vars.post,
+		DB = database,
+		json = json,
+		string = string,
 	}
 	local function run(untrusted_code)
 		local untrusted_function, message = loadstring(untrusted_code)
-		if not untrusted_function then return nil, message end
+		if not untrusted_function then print( message) return false end
 		setfenv(untrusted_function, env)
-		return pcall(untrusted_function)
+		local temp, err = pcall(untrusted_function)
+		if err == nil then
+		else
+			print(err)
+		end
+		return true
 	end	
 	
 		
@@ -235,3 +280,23 @@ function explode(d,p)
     end
   return t
 end
+
+
+
+
+
+
+
+
+
+table.insert(modules, WebServer.init )
+
+
+
+
+
+
+
+
+
+
